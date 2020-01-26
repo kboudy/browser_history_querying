@@ -10,7 +10,7 @@
       "name": "Launch Program",
       "skipFiles": ["<node_internals>/**"],
       "program": "${workspaceFolder}/index.js",
-      "args": ["-q", "torrent", "-l"]
+      "args": ["-t", "locked"]
     }
   ]
 }

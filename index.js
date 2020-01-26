@@ -7,11 +7,12 @@ const chalk = require("chalk"),
   path = require("path"),
   moment = require("moment");
 
+const allFields = ["#", "visit_time", "title", "url"];
 const argOptions = {
   fields: {
     alias: "f",
     type: "string",
-    description: "Comma-delimited field names (#,visit_time,url,title)"
+    description: `Comma-delimited field names (${allFields.join(",")})`
   },
   query: {
     alias: "q",
@@ -47,10 +48,41 @@ const argOptions = {
   }
 };
 
+const formatAndLocalizeDate = st_dt => {
+  var microseconds = parseInt(st_dt, 10);
+  var millis = microseconds / 1000;
+  var past = new Date(1601, 0, 1).getTime();
+  var offset = moment().utcOffset();
+  return moment(past + millis + offset * 60000).format("YYYY-MM-DD HH:mm:ss");
+};
+
+const highlightMatches = (text, isUrlField) => {
+  let matchString = isUrlField ? argv.url : argv.title;
+  if (!matchString && argv.query) {
+    matchString = argv.query;
+  }
+  if (!matchString) {
+    return text;
+  }
+  const matchIndex = text.toLowerCase().indexOf(matchString.toLowerCase());
+  if (matchString < 0) {
+    return text;
+  }
+  let highlighted = text.slice(0, matchIndex);
+  highlighted += chalk.bgYellowBright.black(
+    text.slice(matchIndex, matchIndex + matchString.length)
+  );
+  highlighted += text.slice(matchIndex + matchString.length);
+  return highlighted;
+};
+
 const { argv } = require("yargs")
   .alias("help", "h")
   .version(false)
   .options(argOptions);
+const launchSwitchExists =
+  process.argv.filter(a => a === "-l" || a === "-launch").length > 0;
+const launch = argv.launch && launchSwitchExists;
 
 const historyTempPath = `/tmp/bhq_history`;
 fs.copyFileSync(
@@ -65,20 +97,59 @@ let db = new sqlite3.Database(historyTempPath, err => {
 });
 
 db.serialize(() => {
-  let whereClause = " where 1=1";
+  let whereClause = "where 1=1";
+  let orderClause = "order by visit_time";
+  if (argv.sort_descending) {
+    orderClause = "order by visit_time desc";
+  }
+  let rowNumber = 1;
   if (argv.title) {
     whereClause += ` and title like '%${argv.title}%'`;
   }
   if (argv.url) {
     whereClause += ` and urls.url like '%${argv.url}%'`;
   }
+  if (argv.query) {
+    whereClause += ` and (urls.url like '%${argv.query}%' or title like '%${argv.query}%')`;
+  }
+  const selectedFields = argv.fields ? argv.fields.split(",") : allFields;
   db.each(
-    `select urls.url, title, visit_time from visits join urls on visits.url = urls.id ${whereClause}`,
+    `select urls.url, title, visit_time from visits join urls on visits.url = urls.id ${whereClause} ${orderClause}`,
     (err, row) => {
-      if (err) {
-        console.error(err.message);
+      let fieldString = "";
+      for (const f of selectedFields) {
+        if (allFields.includes(f)) {
+          switch (f) {
+            case "#":
+              fieldString += chalk.cyan(`${rowNumber}`);
+              break;
+            case "url":
+              fieldString += chalk.blue(`${highlightMatches(row.url, true)}`);
+              break;
+            case "visit_time":
+              fieldString += chalk.magenta(
+                `${formatAndLocalizeDate(row.visit_time)}`
+              );
+              break;
+            case "title":
+              fieldString += chalk.white(
+                `${highlightMatches(row.title, false)}`
+              );
+              break;
+          }
+          if (selectedFields.indexOf(f) < selectedFields.length - 1) {
+            fieldString += chalk.gray(",");
+          }
+        }
       }
-      console.log(`${row.url}, ${row.title}, ${row.visit_time}`);
+      if (!launch) {
+        console.log(fieldString);
+      } else {
+        if (parseInt(argv.launch) === rowNumber) {
+          opn(row.url);
+        }
+      }
+      rowNumber++;
     }
   );
 });
@@ -89,150 +160,3 @@ db.close(err => {
   }
   fs.unlinkSync(historyTempPath);
 });
-
-// const { argv } = require("yargs")
-//   .alias("help", "h")
-//   .version(false)
-//   .options(argOptions);
-
-// const launchSwitchExists =
-//   process.argv.filter(a => a === "-l" || a === "-launch").length > 0;
-// const launch = argv.launch && launchSwitchExists;
-
-// const deleteBookmarks = (bookmarkJson, flattened, urlsToDelete) => {
-//   const stripped = stripBookmarks(bookmarkJson);
-//   const survivors = flattened.filter(f => !urlsToDelete.includes(f.url));
-//   stripped.roots.bookmark_bar.children = survivors;
-//   fs.writeFileSync(config.bookmarkPath, JSON.stringify(stripped));
-//   console.log(chalk.white(`Deleted ${urlsToDelete.length} bookmarks:`));
-//   console.log(chalk.red(urlsToDelete.join("\n")));
-// };
-
-// const queryBookmarks = () => {
-//   const bookmarkJson = JSON.parse(fs.readFileSync(config.bookmarkPath));
-//   const flattened = gatherAllBookmarks(bookmarkJson);
-
-//   const availableFields = ["#", "date_added", "name", "url"];
-//   const outputFields = [];
-//   for (const f of (argv.fields || availableFields.join(","))
-//     .split(",")
-//     .map(f => f.trim().toLowerCase())) {
-//     if (availableFields.includes(f)) {
-//       outputFields.push(f);
-//     }
-//   }
-
-//   let sorted = flattened;
-//   if (argv.sort_descending) {
-//     sorted = flattened.sort((a, b) => b.date_added - a.date_added);
-//   } else if (argv.sort) {
-//     sorted = flattened.sort((a, b) => a.date_added - b.date_added);
-//   }
-//   const matches = [];
-//   let resultNumber = 0;
-//   for (const b of sorted) {
-//     let nameMatch;
-//     let urlMatch;
-//     if (argv.query) {
-//       const regEx = new RegExp(argv.query, "i");
-//       nameMatch = b.name.match(regEx);
-//       urlMatch = b.url.match(regEx);
-//       if (!nameMatch && !urlMatch) {
-//         continue;
-//       }
-//     }
-//     resultNumber++;
-
-//     let outString = "";
-//     let isFirst = true;
-//     const chalkColors = [chalk.blue, chalk.white, chalk.magenta, chalk.cyan];
-//     for (const f of outputFields) {
-//       let renderedField = b[f];
-//       if (f === "#") {
-//         renderedField = `${resultNumber}`;
-//       } else if (f === "date_added") {
-//         renderedField = formatAndLocalizeDate(b[f]);
-//       } else if (f === "url" && urlMatch) {
-//         const beforeMatch = b[f].slice(0, urlMatch.index);
-//         const match = urlMatch[0];
-//         const afterMatch = b[f].slice(urlMatch.index + match.length);
-//         renderedField =
-//           chalk.white(beforeMatch) +
-//           chalk.black.bgYellowBright(match) +
-//           chalk.white(afterMatch);
-//       } else if (f === "name" && nameMatch) {
-//         const beforeMatch = b[f].slice(0, nameMatch.index);
-//         const match = nameMatch[0];
-//         const afterMatch = b[f].slice(nameMatch.index + match.length);
-//         renderedField =
-//           chalk.white(beforeMatch) +
-//           chalk.black.bgYellowBright(match) +
-//           chalk.white(afterMatch);
-//       }
-//       if (!isFirst) {
-//         outString = outString + chalk.gray(config.delimiter);
-//       }
-//       isFirst = false;
-//       const currentChalkColor = chalkColors.pop();
-//       chalkColors.unshift(currentChalkColor); // keep colors rotating if need me
-//       outString = outString + `"${currentChalkColor(renderedField)}"`;
-//     }
-//     matches.push(b);
-//     if (!launch) {
-//       console.log(chalk.white(outString));
-//     }
-//   }
-//   if (argv.delete) {
-//     // because a yargs default (of "1") is supplied for the launch arg, it always says the switch is present
-//     // there must be a yargs way to check if it actually was typed, but for now, I'm manually checking
-//     const deleteSwitchExists =
-//       process.argv.filter(a => a === "-d" || a === "-delete").length > 0;
-//     if (deleteSwitchExists) {
-//       let urlsToDelete = matches.map(m => m.url);
-//       if (argv.delete !== "*") {
-//         const lineNumbersToDelete = argv.delete
-//           .split(",")
-//           .map(n => parseInt(n));
-//         const newUrls = [];
-//         for (const l of lineNumbersToDelete) {
-//           newUrls.push(urlsToDelete[l - 1]);
-//         }
-//         urlsToDelete = newUrls;
-//       }
-//       deleteBookmarks(bookmarkJson, flattened, urlsToDelete);
-//     }
-//   } else {
-//     if (!launch) {
-//       console.log(chalk.green(`${matches.length} bookmarks`));
-//     }
-//   }
-//   if (launch) {
-//     // because a yargs default (of "1") is supplied for the launch arg, it always says the switch is present
-//     // there must be a yargs way to check if it actually was typed, but for now, I'm manually checking
-//     if (matches.length === 0) {
-//       console.log(chalk.red("There were no matches to launch"));
-//     } else {
-//       const launchIndex = parseInt(argv.launch) - 1;
-//       if (isNaN(launchIndex)) {
-//         console.log(
-//           chalk.red(`"${argv.launch}": launch # should be an integer`)
-//         );
-//       } else if (launchIndex < 0 || launchIndex >= matches.length) {
-//         console.log(chalk.red(`${argv.launch}: No such result # to launch`));
-//       } else {
-//         opn(matches[launchIndex].url);
-//       }
-//     }
-//   }
-// };
-
-// const debugging =
-//   typeof v8debug === "object" ||
-//   /--debug|--inspect/.test(process.execArgv.join(" "));
-// if (debugging) {
-//   queryBookmarks();
-// }
-// writeCompletionFile();
-// module.exports = () => {
-//   queryBookmarks();
-// };

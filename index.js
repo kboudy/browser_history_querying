@@ -90,73 +90,86 @@ fs.copyFileSync(
   historyTempPath
 );
 const sqlite3 = require("sqlite3").verbose();
-let db = new sqlite3.Database(historyTempPath, err => {
-  if (err) {
-    return console.error(err.message);
-  }
-});
 
-db.serialize(() => {
-  let whereClause = "where 1=1";
-  let orderClause = "order by visit_time";
-  if (argv.sort_descending) {
-    orderClause = "order by visit_time desc";
-  }
-  let rowNumber = 1;
-  if (argv.title) {
-    whereClause += ` and title like '%${argv.title}%'`;
-  }
-  if (argv.url) {
-    whereClause += ` and urls.url like '%${argv.url}%'`;
-  }
-  if (argv.query) {
-    whereClause += ` and (urls.url like '%${argv.query}%' or title like '%${argv.query}%')`;
-  }
-  const selectedFields = argv.fields ? argv.fields.split(",") : allFields;
-  db.each(
-    `select urls.url, title, visit_time from visits join urls on visits.url = urls.id ${whereClause} ${orderClause}`,
-    (err, row) => {
-      let fieldString = "";
-      for (const f of selectedFields) {
-        if (allFields.includes(f)) {
-          switch (f) {
-            case "#":
-              fieldString += chalk.cyan(`${rowNumber}`);
-              break;
-            case "url":
-              fieldString += chalk.blue(`${highlightMatches(row.url, true)}`);
-              break;
-            case "visit_time":
-              fieldString += chalk.magenta(
-                `${formatAndLocalizeDate(row.visit_time)}`
-              );
-              break;
-            case "title":
-              fieldString += chalk.white(
-                `${highlightMatches(row.title, false)}`
-              );
-              break;
-          }
-          if (selectedFields.indexOf(f) < selectedFields.length - 1) {
-            fieldString += chalk.gray(",");
-          }
-        }
-      }
-      if (!launch) {
-        console.log(fieldString);
-      } else {
-        if (parseInt(argv.launch) === rowNumber) {
-          opn(row.url);
-        }
-      }
-      rowNumber++;
+const runQuery = () => {
+  let db = new sqlite3.Database(historyTempPath, err => {
+    if (err) {
+      return console.error(err.message);
     }
-  );
-});
+  });
 
-db.close(err => {
-  if (err) {
-    return console.error(err.message);
-  }
-  fs.unlinkSync(historyTempPath);
-});
+  db.serialize(() => {
+    let whereClause = "where 1=1";
+    let orderClause = "order by visit_time";
+    if (argv.sort_descending) {
+      orderClause = "order by visit_time desc";
+    }
+    let rowNumber = 1;
+    if (argv.title) {
+      whereClause += ` and title like '%${argv.title}%'`;
+    }
+    if (argv.url) {
+      whereClause += ` and urls.url like '%${argv.url}%'`;
+    }
+    if (argv.query) {
+      whereClause += ` and (urls.url like '%${argv.query}%' or title like '%${argv.query}%')`;
+    }
+    const selectedFields = argv.fields ? argv.fields.split(",") : allFields;
+    db.each(
+      `select urls.url, title, visit_time from visits join urls on visits.url = urls.id ${whereClause} ${orderClause}`,
+      (err, row) => {
+        let fieldString = "";
+        for (const f of selectedFields) {
+          if (allFields.includes(f)) {
+            switch (f) {
+              case "#":
+                fieldString += chalk.cyan(`${rowNumber}`);
+                break;
+              case "url":
+                fieldString += chalk.blue(`${highlightMatches(row.url, true)}`);
+                break;
+              case "visit_time":
+                fieldString += chalk.magenta(
+                  `${formatAndLocalizeDate(row.visit_time)}`
+                );
+                break;
+              case "title":
+                fieldString += chalk.white(
+                  `${highlightMatches(row.title, false)}`
+                );
+                break;
+            }
+            if (selectedFields.indexOf(f) < selectedFields.length - 1) {
+              fieldString += chalk.gray(",");
+            }
+          }
+        }
+        if (!launch) {
+          console.log(fieldString);
+        } else {
+          if (parseInt(argv.launch) === rowNumber) {
+            opn(row.url);
+          }
+        }
+        rowNumber++;
+      }
+    );
+  });
+
+  db.close(err => {
+    if (err) {
+      return console.error(err.message);
+    }
+    fs.unlinkSync(historyTempPath);
+  });
+};
+
+const debugging =
+  typeof v8debug === "object" ||
+  /--debug|--inspect/.test(process.execArgv.join(" "));
+if (debugging) {
+  runQuery();
+}
+module.exports = () => {
+  runQuery();
+};

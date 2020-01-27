@@ -56,6 +56,27 @@ const formatAndLocalizeDate = st_dt => {
   return moment(past + millis + offset * 60000).format("YYYY-MM-DD HH:mm:ss");
 };
 
+const writeCompletionFile = () => {
+  const fp = path.join(homedir, ".config/zsh/completions/_bhq");
+  if (!fs.existsSync(path.dirname(fp))) {
+    mkdirp.sync(path.dirname(fp));
+  }
+  if (!fs.existsSync(fp)) {
+    let completionFile = `#compdef bhq\n\n_arguments`;
+
+    for (const o in argOptions) {
+      const item = argOptions[o];
+      completionFile =
+        completionFile +
+        ` '-${item.alias}[${item.description.replace(
+          "'",
+          "''"
+        )}]' '--${o}[${item.description.replace("'", "''")}]'`;
+    }
+    fs.writeFileSync(fp, completionFile);
+  }
+};
+
 const highlightMatches = (text, isUrlField) => {
   let matchString = isUrlField ? argv.url : argv.title;
   if (!matchString && argv.query) {
@@ -170,6 +191,7 @@ const debugging =
 if (debugging) {
   runQuery();
 }
+writeCompletionFile();
 module.exports = () => {
   runQuery();
 };

@@ -4,7 +4,9 @@ const chalk = require("chalk"),
   opn = require("opn"),
   fs = require("fs"),
   homedir = require("os").homedir(),
+  mkdirp = require("mkdirp"),
   path = require("path"),
+  sqliteAsync = require("sqlite-async"),
   moment = require("moment");
 
 const allFields = ["#", "visit_time", "title", "url"];
@@ -110,72 +112,113 @@ fs.copyFileSync(
   path.join(homedir, ".config/BraveSoftware/Brave-Browser/Default/History"),
   historyTempPath
 );
-const sqlite3 = require("sqlite3").verbose();
 
-const runQuery = () => {
-  let db = new sqlite3.Database(historyTempPath, err => {
-    if (err) {
-      return console.error(err.message);
-    }
-  });
+const mergedDbPath = path.join(
+  homedir,
+  "Dropbox/app_config/browser_history_querying/mergedHistory"
+);
 
-  db.serialize(() => {
-    let whereClause = "where 1=1";
-    let orderClause = "order by visit_time";
-    if (argv.sort_descending) {
-      orderClause = "order by visit_time desc";
-    }
-    let rowNumber = 1;
-    if (argv.title) {
-      whereClause += ` and title like '%${argv.title}%'`;
-    }
-    if (argv.url) {
-      whereClause += ` and urls.url like '%${argv.url}%'`;
-    }
-    if (argv.query) {
-      whereClause += ` and (urls.url like '%${argv.query}%' or title like '%${argv.query}%')`;
-    }
-    const selectedFields = argv.fields ? argv.fields.split(",") : allFields;
-    db.each(
-      `select urls.url, title, visit_time from visits join urls on visits.url = urls.id ${whereClause} ${orderClause}`,
-      (err, row) => {
-        let fieldString = "";
-        for (const f of selectedFields) {
-          if (allFields.includes(f)) {
-            switch (f) {
-              case "#":
-                fieldString += chalk.cyan(`${rowNumber}`);
-                break;
-              case "url":
-                fieldString += chalk.blue(`${highlightMatches(row.url, true)}`);
-                break;
-              case "visit_time":
-                fieldString += chalk.magenta(
-                  `${formatAndLocalizeDate(row.visit_time)}`
-                );
-                break;
-              case "title":
-                fieldString += chalk.white(
-                  `${highlightMatches(row.title, false)}`
-                );
-                break;
-            }
-            if (selectedFields.indexOf(f) < selectedFields.length - 1) {
-              fieldString += chalk.gray(",");
-            }
-          }
-        }
-        if (!launch) {
-          console.log(fieldString);
-        } else {
-          if (parseInt(argv.launch) === rowNumber) {
-            opn(row.url);
-          }
-        }
-        rowNumber++;
+const merge = async () => {
+  if (!fs.existsSync(path.dirname(mergedDbPath))) {
+    mkdirp.sync(path.dirname(mergedDbPath));
+  }
+  if (!fs.existsSync(mergedDbPath)) {
+    fs.copyFileSync(historyTempPath, mergedDbPath);
+    return;
+  }
+  const createTable = !fs.existsSync(mergedDbPath);
+  const originDb = await sqliteAsync.open(historyTempPath);
+  const mergedDb = await sqliteAsync.open(mergedDbPath);
+  const existingVisitTimes = [];
+  const existingUrls = [];
+  await mergedDb.each(
+    `select visit_time, urls.url from visits join urls on visits.url = urls.id`,
+    (err, row) => {
+      existingVisitTimes.push(parseInt(row.visit_time));
+      if (!existingUrls.includes(row.url)) {
+        existingUrls.push(row.url);
       }
-    );
-  });
+    }
+  );
+  let i = 1;
+
+  const stmt = await mergedDb.prepare(
+    "INSERT INTO visits (title, visit_time) VALUES (?,?)"
+  );
+  await originDb.each(
+    `select urls.url, title, visit_time from visits join urls on visits.url = urls.id`,
+    async (err, row) => {
+      const visitTime = parseInt(row.visit_time);
+      if (!existingVisitTimes.includes(visitTime)) {
+        console.log(i);
+        i++;
+        await stmt.run(row.url, row.title, row.visit_time);
+      }
+    }
+  );
+  await stmt.finalize();
+  await originDb.close();
+  await mergedDb.close();
+};
+
+const runQuery = async () => {
+  const db = await sqliteAsync.open(historyTempPath);
+
+  let whereClause = "where 1=1";
+  let orderClause = "order by visit_time";
+  if (argv.sort_descending) {
+    orderClause = "order by visit_time desc";
+  }
+  let rowNumber = 1;
+  if (argv.title) {
+    whereClause += ` and title like '%${argv.title}%'`;
+  }
+  if (argv.url) {
+    whereClause += ` and urls.url like '%${argv.url}%'`;
+  }
+  if (argv.query) {
+    whereClause += ` and (urls.url like '%${argv.query}%' or title like '%${argv.query}%')`;
+  }
+  const selectedFields = argv.fields ? argv.fields.split(",") : allFields;
+  await db.each(
+    `select urls.url, title, visit_time from visits join urls on visits.url = urls.id ${whereClause} ${orderClause}`,
+    (err, row) => {
+      let fieldString = "";
+      for (const f of selectedFields) {
+        if (allFields.includes(f)) {
+          switch (f) {
+            case "#":
+              fieldString += chalk.cyan(`${rowNumber}`);
+              break;
+            case "url":
+              fieldString += chalk.blue(`${highlightMatches(row.url, true)}`);
+              break;
+            case "visit_time":
+              fieldString += chalk.magenta(
+                `${formatAndLocalizeDate(row.visit_time)}`
+              );
+              break;
+            case "title":
+              fieldString += chalk.white(
+                `${highlightMatches(row.title, false)}`
+              );
+              break;
+          }
+          if (selectedFields.indexOf(f) < selectedFields.length - 1) {
+            fieldString += chalk.gray(",");
+          }
+        }
+      }
+      if (!launch) {
+        console.log(fieldString);
+      } else {
+        if (parseInt(argv.launch) === rowNumber) {
+          opn(row.url);
+        }
+      }
+      rowNumber++;
+    }
+  );
 
   db.close(err => {
     if (err) {
@@ -189,9 +232,13 @@ const debugging =
   typeof v8debug === "object" ||
   /--debug|--inspect/.test(process.execArgv.join(" "));
 if (debugging) {
-  runQuery();
+  (async () => {
+    merge();
+  })();
 }
 writeCompletionFile();
 module.exports = () => {
-  runQuery();
+  (async () => {
+    runQuery();
+  })();
 };

@@ -9,6 +9,7 @@
       "request": "launch",
       "name": "Launch Program",
       "skipFiles": ["<node_internals>/**"],
+      "runtimeVersion": "13.1.0",
       "program": "${workspaceFolder}/index.js",
       "args": ["-t", "locked"]
     }

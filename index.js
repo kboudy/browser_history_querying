@@ -4,7 +4,9 @@ const chalk = require("chalk"),
   opn = require("opn"),
   fs = require("fs"),
   homedir = require("os").homedir(),
+  mkdirp = require("mkdirp"),
   path = require("path"),
+  sqliteAsync = require("sqlite-async"),
   moment = require("moment");
 
 const allFields = ["#", "visit_time", "title", "url"];
@@ -36,6 +38,16 @@ const argOptions = {
     description:
       "launch first url (or #'d, if you supply it) in default browser"
   },
+  minDate: {
+    alias: "d",
+    type: "string",
+    description: "minimum date"
+  },
+  maxDate: {
+    alias: "D",
+    type: "string",
+    description: "maximum date"
+  },
   sort: {
     alias: "s",
     type: "boolean",
@@ -48,12 +60,14 @@ const argOptions = {
   }
 };
 
-const formatAndLocalizeDate = st_dt => {
-  var microseconds = parseInt(st_dt, 10);
-  var millis = microseconds / 1000;
-  var past = new Date(1601, 0, 1).getTime();
-  var offset = moment().utcOffset();
-  return moment(past + millis + offset * 60000).format("YYYY-MM-DD HH:mm:ss");
+const formatAndLocalizeDate = n => {
+  return moment(new Date(parseInt(n) / 1000 - 1.16444736e13)).format(
+    "YYYY-MM-DD HH:mm:ss"
+  );
+};
+
+const dateToUnix = d => {
+  return (moment(d).unix() * 1000 + 1.16444736e13) * 1000;
 };
 
 const writeCompletionFile = () => {
@@ -105,93 +119,128 @@ const launchSwitchExists =
   process.argv.filter(a => a === "-l" || a === "-launch").length > 0;
 const launch = argv.launch && launchSwitchExists;
 
-const historyTempPath = `/tmp/bhq_history`;
-fs.copyFileSync(
-  path.join(homedir, ".config/BraveSoftware/Brave-Browser/Default/History"),
-  historyTempPath
+const mergedDbPath = path.join(
+  homedir,
+  "Dropbox/app_config/browser_history_querying/mergedHistory"
 );
-const sqlite3 = require("sqlite3").verbose();
 
-const runQuery = () => {
-  let db = new sqlite3.Database(historyTempPath, err => {
-    if (err) {
-      return console.error(err.message);
-    }
-  });
+const merge = async () => {
+  const historyTempPath = `/tmp/bhq_history`;
+  fs.copyFileSync(
+    path.join(homedir, ".config/BraveSoftware/Brave-Browser/Default/History"),
+    historyTempPath
+  );
 
-  db.serialize(() => {
-    let whereClause = "where 1=1";
-    let orderClause = "order by visit_time";
-    if (argv.sort_descending) {
-      orderClause = "order by visit_time desc";
-    }
-    let rowNumber = 1;
-    if (argv.title) {
-      whereClause += ` and title like '%${argv.title}%'`;
-    }
-    if (argv.url) {
-      whereClause += ` and urls.url like '%${argv.url}%'`;
-    }
-    if (argv.query) {
-      whereClause += ` and (urls.url like '%${argv.query}%' or title like '%${argv.query}%')`;
-    }
-    const selectedFields = argv.fields ? argv.fields.split(",") : allFields;
-    db.each(
-      `select urls.url, title, visit_time from visits join urls on visits.url = urls.id ${whereClause} ${orderClause}`,
-      (err, row) => {
-        let fieldString = "";
-        for (const f of selectedFields) {
-          if (allFields.includes(f)) {
-            switch (f) {
-              case "#":
-                fieldString += chalk.cyan(`${rowNumber}`);
-                break;
-              case "url":
-                fieldString += chalk.blue(`${highlightMatches(row.url, true)}`);
-                break;
-              case "visit_time":
-                fieldString += chalk.magenta(
-                  `${formatAndLocalizeDate(row.visit_time)}`
-                );
-                break;
-              case "title":
-                fieldString += chalk.white(
-                  `${highlightMatches(row.title, false)}`
-                );
-                break;
-            }
-            if (selectedFields.indexOf(f) < selectedFields.length - 1) {
-              fieldString += chalk.gray(",");
-            }
-          }
-        }
-        if (!launch) {
-          console.log(fieldString);
-        } else {
-          if (parseInt(argv.launch) === rowNumber) {
-            opn(row.url);
-          }
-        }
-        rowNumber++;
-      }
+  if (!fs.existsSync(path.dirname(mergedDbPath))) {
+    mkdirp.sync(path.dirname(mergedDbPath));
+  }
+  if (!fs.existsSync(mergedDbPath)) {
+    const mdb = await sqliteAsync.open(mergedDbPath);
+    await mdb.run(
+      "CREATE TABLE visits (id PRIMARY KEY, url INTEGER, visit_time INTEGER)"
     );
-  });
+    await mdb.run("CREATE TABLE urls (id PRIMARY KEY, title TEXT, url TEXT)");
+    await mdb.close();
+  }
+  const db = await sqliteAsync.open(historyTempPath);
+  await db.run(`ATTACH '${mergedDbPath}'as merged;`);
+  const visitCountBefore = (
+    await db.get("SELECT COUNT(*) AS cnt FROM merged.visits")
+  ).cnt;
+  await db.run(
+    `INSERT INTO merged.visits select id, url, visit_time from visits WHERE id NOT IN (SELECT id FROM merged.visits)`
+  );
+  await db.run(
+    `INSERT INTO merged.urls select id, title, url from urls WHERE id NOT IN (SELECT id FROM merged.urls)`
+  );
 
-  db.close(err => {
-    if (err) {
-      return console.error(err.message);
+  const visitCountAfter = (
+    await db.get("SELECT COUNT(*) AS cnt FROM merged.visits")
+  ).cnt;
+  await db.close();
+};
+
+const runQuery = async () => {
+  const db = await sqliteAsync.open(mergedDbPath);
+
+  let whereClause = "where 1=1";
+  let orderClause = "order by visit_time";
+  if (argv.sort_descending) {
+    orderClause = "order by visit_time desc";
+  }
+  let rowNumber = 1;
+  if (argv.title) {
+    whereClause += ` and title like '%${argv.title}%'`;
+  }
+  if (argv.url) {
+    whereClause += ` and urls.url like '%${argv.url}%'`;
+  }
+  if (argv.query) {
+    whereClause += ` and (urls.url like '%${argv.query}%' or title like '%${argv.query}%')`;
+  }
+  if (argv.minDate) {
+    whereClause += ` and visit_time >= ${dateToUnix(argv.minDate)}`;
+  }
+  if (argv.maxDate) {
+    whereClause += ` and visit_time <= ${dateToUnix(argv.maxDate)}`;
+  }
+  const selectedFields = argv.fields ? argv.fields.split(",") : allFields;
+  await db.each(
+    `select urls.url, title, visit_time from visits join urls on visits.url = urls.id ${whereClause} ${orderClause}`,
+    (err, row) => {
+      let fieldString = "";
+      for (const f of selectedFields) {
+        if (allFields.includes(f)) {
+          switch (f) {
+            case "#":
+              fieldString += chalk.cyan(`${rowNumber}`);
+              break;
+            case "url":
+              fieldString += chalk.blue(`${highlightMatches(row.url, true)}`);
+              break;
+            case "visit_time":
+              fieldString += chalk.magenta(
+                `${formatAndLocalizeDate(row.visit_time)}`
+              );
+              break;
+            case "title":
+              fieldString += chalk.white(
+                `${highlightMatches(row.title, false)}`
+              );
+              break;
+          }
+          if (selectedFields.indexOf(f) < selectedFields.length - 1) {
+            fieldString += chalk.gray(",");
+          }
+        }
+      }
+      if (!launch) {
+        console.log(fieldString);
+      } else {
+        if (parseInt(argv.launch) === rowNumber) {
+          opn(row.url);
+        }
+      }
+      rowNumber++;
     }
-    fs.unlinkSync(historyTempPath);
-  });
+  );
+
+  await db.close();
 };
 
 const debugging =
   typeof v8debug === "object" ||
   /--debug|--inspect/.test(process.execArgv.join(" "));
 if (debugging) {
-  runQuery();
+  (async () => {
+    await merge();
+    await runQuery();
+  })();
 }
 writeCompletionFile();
 module.exports = () => {
-  runQuery();
+  (async () => {
+    await merge();
+    await runQuery();
+  })();
 };

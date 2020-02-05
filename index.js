@@ -66,8 +66,16 @@ const formatAndLocalizeDate = n => {
   );
 };
 
-const dateToUnix = d => {
-  return (moment(d).unix() * 1000 + 1.16444736e13) * 1000;
+const dateToUnix = (d, addDays) => {
+  const a = addDays ? addDays : 0;
+  return (
+    (moment(d)
+      .add(a, "days")
+      .unix() *
+      1000 +
+      1.16444736e13) *
+    1000
+  );
 };
 
 const writeCompletionFile = () => {
@@ -182,7 +190,7 @@ const runQuery = async () => {
     whereClause += ` and visit_time >= ${dateToUnix(argv.minDate)}`;
   }
   if (argv.maxDate) {
-    whereClause += ` and visit_time <= ${dateToUnix(argv.maxDate)}`;
+    whereClause += ` and visit_time <= ${dateToUnix(argv.maxDate, 1)}`;
   }
   const selectedFields = argv.fields ? argv.fields.split(",") : allFields;
   await db.each(
